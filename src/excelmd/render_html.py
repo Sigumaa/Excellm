@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from html import escape as html_escape
 
 from .model import AnchorPoint, SheetDoc, WorkbookDoc
 from .parser.utils import index_to_col, parse_range_ref, rowcol_to_coord
+
+EMU_PER_PIXEL = 9525.0
+ROW_HEADER_WIDTH = 56.0
+COL_HEADER_HEIGHT = 24.0
 
 
 def render_workbook_html(workbook: WorkbookDoc) -> str:
@@ -51,7 +56,7 @@ def render_workbook_html(workbook: WorkbookDoc) -> str:
         ranges = _sheetview_ranges(sheet)
         for idx, rng in enumerate(ranges, start=1):
             parts.append(f"<h3>Range {idx}: {html_escape(rng.ref)}</h3>")
-            parts.append(_render_sheet_range_html(sheet, rng.ref, workbook.style_css_map))
+            parts.append(_render_sheet_range_html(sheet, rng.ref, workbook.style_css_map, idx))
 
         if not ranges:
             parts.append('<p class="empty">No renderable range.</p>')
@@ -86,6 +91,7 @@ def render_workbook_html(workbook: WorkbookDoc) -> str:
     parts.append("</section>")
 
     parts.append("</main>")
+    parts.append(_html_script())
     parts.append("</body>")
     parts.append("</html>")
 
@@ -101,12 +107,104 @@ def _sheetview_ranges(sheet: SheetDoc):
         return []
 
 
-def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dict[str, str]) -> str:
-    rng = parse_range_ref(range_ref)
-    visible_rows = [r for r in range(rng.start_row, rng.end_row + 1) if r not in sheet.hidden_rows]
-    visible_cols = [c for c in range(rng.start_col, rng.end_col + 1) if c not in sheet.hidden_cols]
+@dataclass(slots=True)
+class _SheetGeometry:
+    sheet: SheetDoc
+    start_col: int
+    start_row: int
+    visible_cols: list[int]
+    visible_rows: list[int]
+    total_width: float
+    total_height: float
 
-    if not visible_rows or not visible_cols:
+    @classmethod
+    def build(cls, sheet: SheetDoc, start_col: int, start_row: int, end_col: int, end_row: int) -> "_SheetGeometry":
+        visible_cols = [c for c in range(start_col, end_col + 1) if c not in sheet.hidden_cols]
+        visible_rows = [r for r in range(start_row, end_row + 1) if r not in sheet.hidden_rows]
+
+        total_w = sum(_col_width_to_px(sheet.col_widths.get(c)) for c in visible_cols)
+        total_h = sum(_row_height_to_px(sheet.row_heights.get(r)) for r in visible_rows)
+        return cls(
+            sheet=sheet,
+            start_col=start_col,
+            start_row=start_row,
+            visible_cols=visible_cols,
+            visible_rows=visible_rows,
+            total_width=total_w,
+            total_height=total_h,
+        )
+
+    def col_width(self, col: int) -> float:
+        return _col_width_to_px(self.sheet.col_widths.get(col))
+
+    def row_height(self, row: int) -> float:
+        return _row_height_to_px(self.sheet.row_heights.get(row))
+
+    def x_at_col(self, col: int, col_off: int = 0) -> float:
+        x = 0.0
+        if col >= self.start_col:
+            for c in range(self.start_col, col):
+                if c in self.sheet.hidden_cols:
+                    continue
+                x += self.col_width(c)
+        else:
+            for c in range(col, self.start_col):
+                if c in self.sheet.hidden_cols:
+                    continue
+                x -= self.col_width(c)
+        x += col_off / EMU_PER_PIXEL
+        return x
+
+    def y_at_row(self, row: int, row_off: int = 0) -> float:
+        y = 0.0
+        if row >= self.start_row:
+            for r in range(self.start_row, row):
+                if r in self.sheet.hidden_rows:
+                    continue
+                y += self.row_height(r)
+        else:
+            for r in range(row, self.start_row):
+                if r in self.sheet.hidden_rows:
+                    continue
+                y -= self.row_height(r)
+        y += row_off / EMU_PER_PIXEL
+        return y
+
+    def point(self, anchor: AnchorPoint) -> tuple[float, float]:
+        return self.x_at_col(anchor.col, anchor.col_off), self.y_at_row(anchor.row, anchor.row_off)
+
+    def freeze_lines(self) -> tuple[float | None, float | None]:
+        if not self.sheet.pane:
+            return None, None
+
+        def _read_int(key: str) -> int:
+            raw = self.sheet.pane.get(key)
+            if raw is None:
+                return 0
+            try:
+                return int(float(raw))
+            except ValueError:
+                return 0
+
+        x_split = _read_int("xSplit")
+        y_split = _read_int("ySplit")
+
+        freeze_x = None
+        freeze_y = None
+        if x_split > 0:
+            freeze_col = self.start_col + x_split
+            freeze_x = self.x_at_col(freeze_col)
+        if y_split > 0:
+            freeze_row = self.start_row + y_split
+            freeze_y = self.y_at_row(freeze_row)
+        return freeze_x, freeze_y
+
+
+def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dict[str, str], idx: int) -> str:
+    rng = parse_range_ref(range_ref)
+    geom = _SheetGeometry.build(sheet, rng.start_col, rng.start_row, rng.end_col, rng.end_row)
+
+    if not geom.visible_rows or not geom.visible_cols:
         return '<p class="empty">All rows/cols in this range are hidden.</p>'
 
     merge_anchor: dict[str, tuple[int, int, str]] = {}
@@ -117,8 +215,8 @@ def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dic
         if m.end_col < rng.start_col or m.start_col > rng.end_col:
             continue
 
-        m_rows = [r for r in visible_rows if m.start_row <= r <= m.end_row]
-        m_cols = [c for c in visible_cols if m.start_col <= c <= m.end_col]
+        m_rows = [r for r in geom.visible_rows if m.start_row <= r <= m.end_row]
+        m_cols = [c for c in geom.visible_cols if m.start_col <= c <= m.end_col]
         if not m_rows or not m_cols:
             continue
 
@@ -130,34 +228,39 @@ def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dic
                 if coord != anchor_coord:
                     merge_covered.add(coord)
 
-    col_px: dict[int, float] = {col: _col_width_to_px(sheet.col_widths.get(col)) for col in visible_cols}
-    row_px: dict[int, float] = {row: _row_height_to_px(sheet.row_heights.get(row)) for row in visible_rows}
-
-    total_w = int(sum(col_px.values()))
-    total_h = int(sum(row_px.values()))
-
     out: list[str] = []
+    out.append(f'<div class="sv-range" data-range-id="{idx}">')
+    out.append('<div class="sv-toolbar">')
+    out.append('<button type="button" data-act="zoom-out">−</button>')
+    out.append('<button type="button" data-act="zoom-reset">100%</button>')
+    out.append('<button type="button" data-act="zoom-in">＋</button>')
+    out.append('<label><input type="checkbox" data-layer="shapes" checked>shapes</label>')
+    out.append('<label><input type="checkbox" data-layer="lines" checked>lines</label>')
+    out.append('<label><input type="checkbox" data-layer="freeze" checked>freeze</label>')
+    out.append('</div>')
+
     out.append('<div class="sv-wrap">')
+    out.append('<div class="sv-viewport">')
     out.append('<div class="sv-canvas">')
     out.append('<table class="sv-grid">')
     out.append("<colgroup>")
-    out.append('<col style="width:56px">')
-    for col in visible_cols:
-        out.append(f'<col style="width:{col_px[col]:.1f}px">')
+    out.append(f'<col style="width:{ROW_HEADER_WIDTH}px">')
+    for col in geom.visible_cols:
+        out.append(f'<col style="width:{geom.col_width(col):.1f}px">')
     out.append("</colgroup>")
     out.append("<thead>")
     out.append('<tr class="sv-head-row">')
     out.append('<th class="sv-corner"></th>')
-    for col in visible_cols:
+    for col in geom.visible_cols:
         out.append(f'<th class="sv-col-head">{index_to_col(col)}</th>')
     out.append("</tr>")
     out.append("</thead>")
     out.append("<tbody>")
 
-    for row in visible_rows:
-        out.append(f'<tr style="height:{row_px[row]:.1f}px">')
+    for row in geom.visible_rows:
+        out.append(f'<tr style="height:{geom.row_height(row):.1f}px">')
         out.append(f'<th class="sv-row-head">{row}</th>')
-        for col in visible_cols:
+        for col in geom.visible_cols:
             coord = rowcol_to_coord(row, col)
             if coord in merge_covered:
                 continue
@@ -192,21 +295,15 @@ def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dic
 
     out.append("</tbody>")
     out.append("</table>")
-    out.extend(_overlay_html(sheet, rng.start_col, rng.start_row, total_w, total_h))
+    out.extend(_overlay_html(sheet, geom))
+    out.append("</div>")
+    out.append("</div>")
     out.append("</div>")
     out.append("</div>")
     return "\n".join(out)
 
 
-def _overlay_html(sheet: SheetDoc, start_col: int, start_row: int, total_w: int, total_h: int) -> list[str]:
-    origin_x = (start_col - 1) * 64.0
-    origin_y = (start_row - 1) * 20.0
-
-    def intersects(bbox: tuple[float, float, float, float]) -> bool:
-        x1, y1, x2, y2 = bbox
-        rx1, ry1, rx2, ry2 = origin_x, origin_y, origin_x + total_w, origin_y + total_h
-        return not (x2 < rx1 or x1 > rx2 or y2 < ry1 or y1 > ry2)
-
+def _overlay_html(sheet: SheetDoc, geom: _SheetGeometry) -> list[str]:
     drawing_map = {obj.object_uid: obj for obj in sheet.drawings}
 
     lines: list[str] = []
@@ -214,14 +311,17 @@ def _overlay_html(sheet: SheetDoc, start_col: int, start_row: int, total_w: int,
 
     z = 10
     for obj in sheet.drawings:
-        if obj.kind == "cxnSp" or not intersects(obj.bbox):
+        if obj.kind == "cxnSp":
             continue
 
-        x1, y1, x2, y2 = obj.bbox
-        left = max(0.0, x1 - origin_x)
-        top = max(0.0, y1 - origin_y)
-        width = max(8.0, x2 - x1)
-        height = max(8.0, y2 - y1)
+        rect = _shape_rect(obj, geom)
+        if rect is None:
+            continue
+        left, top, width, height = rect
+        if left + width < 0 or top + height < 0:
+            continue
+        if left > geom.total_width or top > geom.total_height:
+            continue
 
         label = (obj.text or obj.name or obj.object_id).strip()
         safe_label = html_escape(label)
@@ -246,7 +346,10 @@ def _overlay_html(sheet: SheetDoc, start_col: int, start_row: int, total_w: int,
             f'width:{width:.1f}px;height:{height:.1f}px;{shape_style}">{body}</div>'
         )
 
-    lines.append(f'<svg class="sv-lines" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}">')
+    lines.append(
+        f'<svg class="sv-lines" width="{geom.total_width:.1f}" height="{geom.total_height:.1f}" '
+        f'viewBox="0 0 {geom.total_width:.1f} {geom.total_height:.1f}">'
+    )
     lines.append("<defs>")
     lines.append('<marker id="arrow-triangle" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">')
     lines.append('<path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />')
@@ -254,13 +357,11 @@ def _overlay_html(sheet: SheetDoc, start_col: int, start_row: int, total_w: int,
     lines.append("</defs>")
 
     for conn in sheet.connectors:
-        x1, y1 = _connector_point(conn.anchor_from, conn.bbox, True)
-        x2, y2 = _connector_point(conn.anchor_to, conn.bbox, False)
-        x1 -= origin_x
-        x2 -= origin_x
-        y1 -= origin_y
-        y2 -= origin_y
-        if max(x1, x2) < 0 or max(y1, y2) < 0 or min(x1, x2) > total_w or min(y1, y2) > total_h:
+        p1, p2 = _connector_points(conn.anchor_from, conn.anchor_to, conn.bbox, geom)
+        x1, y1 = p1
+        x2, y2 = p2
+
+        if max(x1, x2) < 0 or max(y1, y2) < 0 or min(x1, x2) > geom.total_width or min(y1, y2) > geom.total_height:
             continue
 
         source_obj = drawing_map.get(conn.object_uid)
@@ -275,12 +376,59 @@ def _overlay_html(sheet: SheetDoc, start_col: int, start_row: int, total_w: int,
 
         lines.append(
             f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
-            f'stroke="{stroke}" stroke-width="{stroke_width}" stroke-opacity="0.9"{dash_attr}{marker_start}{marker_end} />'
+            f'stroke="{stroke}" stroke-width="{stroke_width}" stroke-opacity="0.92"{dash_attr}{marker_start}{marker_end} />'
         )
-    lines.append("</svg>")
 
+        if conn.text:
+            mx = (x1 + x2) / 2
+            my = (y1 + y2) / 2
+            label = html_escape(conn.text.strip())
+            lines.append(f'<text x="{mx:.1f}" y="{my - 2:.1f}" class="sv-line-label">{label}</text>')
+
+    freeze_x, freeze_y = geom.freeze_lines()
+    if freeze_x is not None:
+        lines.append(f'<line class="sv-freeze" x1="{freeze_x:.1f}" y1="0" x2="{freeze_x:.1f}" y2="{geom.total_height:.1f}" />')
+    if freeze_y is not None:
+        lines.append(f'<line class="sv-freeze" x1="0" y1="{freeze_y:.1f}" x2="{geom.total_width:.1f}" y2="{freeze_y:.1f}" />')
+
+    lines.append("</svg>")
     lines.append("</div>")
     return lines
+
+
+def _shape_rect(obj, geom: _SheetGeometry) -> tuple[float, float, float, float] | None:
+    if obj.anchor_from is not None and obj.anchor_to is not None:
+        x1, y1 = geom.point(obj.anchor_from)
+        x2, y2 = geom.point(obj.anchor_to)
+        left = min(x1, x2)
+        top = min(y1, y2)
+        width = max(8.0, abs(x2 - x1))
+        height = max(8.0, abs(y2 - y1))
+        return left, top, width, height
+
+    x1, y1, x2, y2 = obj.bbox
+    width = max(8.0, x2 - x1)
+    height = max(8.0, y2 - y1)
+    return x1, y1, width, height
+
+
+def _connector_points(
+    from_anchor: AnchorPoint | None,
+    to_anchor: AnchorPoint | None,
+    bbox: tuple[float, float, float, float],
+    geom: _SheetGeometry,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    if from_anchor is not None:
+        p1 = geom.point(from_anchor)
+    else:
+        p1 = (bbox[0], bbox[1])
+
+    if to_anchor is not None:
+        p2 = geom.point(to_anchor)
+    else:
+        p2 = (bbox[2], bbox[3])
+
+    return p1, p2
 
 
 def _shape_style_css(extra: dict[str, str], z_index: int) -> str:
@@ -339,12 +487,6 @@ def _has_arrow(value: str | None) -> bool:
     return bool(value and value.lower() != "none")
 
 
-def _connector_point(anchor: AnchorPoint | None, bbox: tuple[float, float, float, float], is_start: bool) -> tuple[float, float]:
-    if anchor is not None:
-        return anchor.col * 64.0 + anchor.col_off / 9525.0, anchor.row * 20.0 + anchor.row_off / 9525.0
-    return (bbox[0], bbox[1]) if is_start else (bbox[2], bbox[3])
-
-
 def _cell_html(value: str, formula: str | None) -> str:
     safe_value = html_escape(value or "")
     if formula:
@@ -358,7 +500,9 @@ def _cell_html(value: str, formula: str | None) -> str:
 def _col_width_to_px(width: float | None) -> float:
     if width is None:
         return 64.0
-    return max(20.0, width * 7.0 + 5.0)
+    # Match Excel-ish conversion more closely
+    px = int(((256 * width + int(128 / 7)) / 256) * 7)
+    return max(20.0, float(px))
 
 
 def _row_height_to_px(height: float | None) -> float:
@@ -396,17 +540,22 @@ def _html_css() -> str:
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: #fff; color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-.page { max-width: 98vw; margin: 0 auto; padding: 18px 16px 80px; }
+.page { max-width: 99vw; margin: 0 auto; padding: 18px 14px 80px; }
 h1 { margin: 0 0 12px; font-size: 24px; }
 h2 { margin: 28px 0 10px; font-size: 18px; }
 h3 { margin: 22px 0 8px; font-size: 14px; }
 .meta { margin: 0 0 10px; color: #4b5563; }
 .empty { color: #6b7280; font-style: italic; }
-.simple { border-collapse: collapse; width: 100%; max-width: 1200px; }
+.simple { border-collapse: collapse; width: 100%; max-width: 1400px; }
 .simple th, .simple td { border: 1px solid var(--line); padding: 6px 8px; font-size: 12px; vertical-align: top; }
 .simple th { background: var(--bg-soft); text-align: left; }
-.sv-wrap { margin: 12px 0 28px; border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
-.sv-canvas { position: relative; display: inline-block; }
+.sv-range { margin: 8px 0 22px; }
+.sv-toolbar { display: flex; gap: 8px; align-items: center; margin: 0 0 6px; font-size: 12px; }
+.sv-toolbar button { border: 1px solid #c7d2e0; background: #fff; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.sv-toolbar label { user-select: none; display: inline-flex; gap: 4px; align-items: center; color: #334155; }
+.sv-wrap { border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+.sv-viewport { padding: 8px; min-width: fit-content; }
+.sv-canvas { position: relative; display: inline-block; transform-origin: top left; }
 .sv-grid { border-collapse: collapse; font: 11px/1.25 'Yu Gothic UI', 'Meiryo', sans-serif; table-layout: fixed; background: #fff; }
 .sv-grid th, .sv-grid td { border: 1px solid var(--line); }
 .sv-grid .sv-head-row th,
@@ -416,11 +565,69 @@ h3 { margin: 22px 0 8px; font-size: 14px; }
 .sv-grid .sv-col-head { height: 24px; position: sticky; top: 0; z-index: 6; }
 .sv-grid .sv-corner { width: 56px; min-width: 56px; position: sticky; top: 0; left: 0; z-index: 7; }
 .sv-grid .sv-row-head { width: 56px; min-width: 56px; position: sticky; left: 0; z-index: 5; }
-.sv-grid td { padding: 2px 4px; overflow: hidden; vertical-align: top; white-space: pre-wrap; }
+.sv-grid td { padding: 2px 4px; overflow: hidden; vertical-align: top; white-space: pre-wrap; background: #fff; }
 .sv-grid .sv-empty { color: transparent; }
 .sv-formula { display: block; margin-top: 2px; color: #6b7280; font-size: 10px; }
 .sv-overlay { position: absolute; left: 56px; top: 24px; right: 0; bottom: 0; pointer-events: none; }
 .sv-shape { position: absolute; border: 1px solid var(--shape); background: var(--shape-bg); color: var(--text); font: 10px/1.2 sans-serif; padding: 2px; overflow: hidden; }
 .sv-shape.pic { border-color: var(--pic); background: var(--pic-bg); }
 .sv-lines { position: absolute; inset: 0; overflow: visible; }
+.sv-line-label { font: 10px/1.1 sans-serif; fill: #1f2937; paint-order: stroke; stroke: #fff; stroke-width: 2px; }
+.sv-freeze { stroke: #2563eb; stroke-width: 1.3; stroke-dasharray: 5 3; opacity: 0.9; }
 </style>"""
+
+
+def _html_script() -> str:
+    return """<script>
+(() => {
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+  document.querySelectorAll('.sv-range').forEach((rangeEl) => {
+    const canvas = rangeEl.querySelector('.sv-canvas');
+    const overlay = rangeEl.querySelector('.sv-overlay');
+    const lines = rangeEl.querySelector('.sv-lines');
+    let scale = 1;
+
+    const applyScale = () => {
+      canvas.style.transform = `scale(${scale})`;
+      const reset = rangeEl.querySelector('[data-act="zoom-reset"]');
+      if (reset) reset.textContent = `${Math.round(scale * 100)}%`;
+    };
+
+    rangeEl.querySelector('[data-act="zoom-in"]')?.addEventListener('click', () => {
+      scale = clamp(scale + 0.1, 0.4, 3.0);
+      applyScale();
+    });
+    rangeEl.querySelector('[data-act="zoom-out"]')?.addEventListener('click', () => {
+      scale = clamp(scale - 0.1, 0.4, 3.0);
+      applyScale();
+    });
+    rangeEl.querySelector('[data-act="zoom-reset"]')?.addEventListener('click', () => {
+      scale = 1;
+      applyScale();
+    });
+
+    rangeEl.querySelectorAll('input[type="checkbox"][data-layer]').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        const layer = cb.getAttribute('data-layer');
+        if (layer === 'shapes' && overlay) {
+          overlay.querySelectorAll('.sv-shape').forEach((el) => {
+            el.style.display = cb.checked ? '' : 'none';
+          });
+        }
+        if (layer === 'lines' && lines) {
+          lines.querySelectorAll('line:not(.sv-freeze),text').forEach((el) => {
+            el.style.display = cb.checked ? '' : 'none';
+          });
+        }
+        if (layer === 'freeze' && lines) {
+          lines.querySelectorAll('.sv-freeze').forEach((el) => {
+            el.style.display = cb.checked ? '' : 'none';
+          });
+        }
+      });
+    });
+
+    applyScale();
+  });
+})();
+</script>"""
