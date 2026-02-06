@@ -7,7 +7,7 @@ name = "excelmd"
 version = "0.1.0"
 description = "High-fidelity .xlsx to single Markdown converter for LLM ingestion"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 authors = [{ name = "Excellm" }]
 dependencies = []
 
