@@ -91,7 +91,6 @@ def render_workbook_html(workbook: WorkbookDoc) -> str:
     parts.append("</section>")
 
     parts.append("</main>")
-    parts.append(_html_script())
     parts.append("</body>")
     parts.append("</html>")
 
@@ -230,15 +229,6 @@ def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dic
 
     out: list[str] = []
     out.append(f'<div class="sv-range" data-range-id="{idx}">')
-    out.append('<div class="sv-toolbar">')
-    out.append('<button type="button" data-act="zoom-out">−</button>')
-    out.append('<button type="button" data-act="zoom-reset">100%</button>')
-    out.append('<button type="button" data-act="zoom-in">＋</button>')
-    out.append('<label><input type="checkbox" data-layer="shapes" checked>shapes</label>')
-    out.append('<label><input type="checkbox" data-layer="lines" checked>lines</label>')
-    out.append('<label><input type="checkbox" data-layer="freeze" checked>freeze</label>')
-    out.append('</div>')
-
     out.append('<div class="sv-wrap">')
     out.append('<div class="sv-viewport">')
     out.append('<div class="sv-canvas">')
@@ -541,12 +531,9 @@ h3 { margin: 22px 0 8px; font-size: 14px; }
 .simple th, .simple td { border: 1px solid var(--line); padding: 6px 8px; font-size: 12px; vertical-align: top; }
 .simple th { background: var(--bg-soft); text-align: left; }
 .sv-range { margin: 8px 0 22px; }
-.sv-toolbar { display: flex; gap: 8px; align-items: center; margin: 0 0 6px; font-size: 12px; }
-.sv-toolbar button { border: 1px solid #c7d2e0; background: #fff; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
-.sv-toolbar label { user-select: none; display: inline-flex; gap: 4px; align-items: center; color: #334155; }
 .sv-wrap { border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
 .sv-viewport { padding: 8px; min-width: fit-content; }
-.sv-canvas { position: relative; display: inline-block; transform-origin: top left; }
+.sv-canvas { position: relative; display: inline-block; }
 .sv-grid { border-collapse: collapse; font: 11px/1.25 'Yu Gothic UI', 'Meiryo', sans-serif; table-layout: fixed; background: #fff; }
 .sv-grid th, .sv-grid td { border: 1px solid var(--line); }
 .sv-grid .sv-head-row th,
@@ -565,59 +552,3 @@ h3 { margin: 22px 0 8px; font-size: 14px; }
 .sv-line-label { font: 10px/1.1 sans-serif; fill: #1f2937; paint-order: stroke; stroke: #fff; stroke-width: 2px; }
 .sv-freeze { stroke: #2563eb; stroke-width: 1.3; stroke-dasharray: 5 3; opacity: 0.9; }
 </style>"""
-
-
-def _html_script() -> str:
-    return """<script>
-(() => {
-  const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-  document.querySelectorAll('.sv-range').forEach((rangeEl) => {
-    const canvas = rangeEl.querySelector('.sv-canvas');
-    const overlay = rangeEl.querySelector('.sv-overlay');
-    const lines = rangeEl.querySelector('.sv-lines');
-    let scale = 1;
-
-    const applyScale = () => {
-      canvas.style.transform = `scale(${scale})`;
-      const reset = rangeEl.querySelector('[data-act="zoom-reset"]');
-      if (reset) reset.textContent = `${Math.round(scale * 100)}%`;
-    };
-
-    rangeEl.querySelector('[data-act="zoom-in"]')?.addEventListener('click', () => {
-      scale = clamp(scale + 0.1, 0.4, 3.0);
-      applyScale();
-    });
-    rangeEl.querySelector('[data-act="zoom-out"]')?.addEventListener('click', () => {
-      scale = clamp(scale - 0.1, 0.4, 3.0);
-      applyScale();
-    });
-    rangeEl.querySelector('[data-act="zoom-reset"]')?.addEventListener('click', () => {
-      scale = 1;
-      applyScale();
-    });
-
-    rangeEl.querySelectorAll('input[type="checkbox"][data-layer]').forEach((cb) => {
-      cb.addEventListener('change', () => {
-        const layer = cb.getAttribute('data-layer');
-        if (layer === 'shapes' && overlay) {
-          overlay.querySelectorAll('.sv-shape').forEach((el) => {
-            el.style.display = cb.checked ? '' : 'none';
-          });
-        }
-        if (layer === 'lines' && lines) {
-          lines.querySelectorAll('line:not(.sv-freeze),text').forEach((el) => {
-            el.style.display = cb.checked ? '' : 'none';
-          });
-        }
-        if (layer === 'freeze' && lines) {
-          lines.querySelectorAll('.sv-freeze').forEach((el) => {
-            el.style.display = cb.checked ? '' : 'none';
-          });
-        }
-      });
-    });
-
-    applyScale();
-  });
-})();
-</script>"""

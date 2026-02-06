@@ -59,6 +59,8 @@ def test_standalone_html_output(sample_files) -> None:
     assert "Sheet: 1. ログイン(A101)" in html
     assert "sv-formula" not in html
     assert '=IF(INDIRECT("変更履歴!E2")<>"",INDIRECT("変更履歴!E2"),"")' not in html
+    assert "sv-toolbar" not in html
+    assert "<script>" not in html.lower()
 
 
 def test_work_mode_prefers_displayed_values(sample_files) -> None:

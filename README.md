@@ -62,6 +62,7 @@ uv run --python 3.12 excel-md 入力.xlsx -o 出力.html --html
 - セルスタイル（フォント・背景・罫線・配置の主要要素）
 - 図形オーバーレイとコネクタ線/矢印
 - hidden行/列の非表示
+- 操作UIなしの静的HTML（JavaScript非依存）
 
 全量モード（サイズ大、完全ダンプ）:
 
