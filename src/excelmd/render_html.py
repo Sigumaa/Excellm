@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from html import escape as html_escape
 
@@ -229,8 +230,12 @@ def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dic
 
     out: list[str] = []
     out.append(f'<div class="sv-range" data-range-id="{idx}">')
+    pad_top, pad_right, pad_bottom, pad_left = _sheet_padding_px(sheet)
     out.append('<div class="sv-wrap">')
-    out.append('<div class="sv-viewport">')
+    out.append(
+        '<div class="sv-viewport" '
+        f'style="padding:{pad_top:.1f}px {pad_right:.1f}px {pad_bottom:.1f}px {pad_left:.1f}px;">'
+    )
     out.append('<div class="sv-canvas">')
     out.append('<table class="sv-grid">')
     out.append("<colgroup>")
@@ -285,6 +290,9 @@ def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dic
     out.extend(_overlay_html(sheet, geom))
     out.append("</div>")
     out.append("</div>")
+    hf_html = _header_footer_html(sheet)
+    if hf_html:
+        out.append(hf_html)
     out.append("</div>")
     out.append("</div>")
     return "\n".join(out)
@@ -377,6 +385,15 @@ def _overlay_html(sheet: SheetDoc, geom: _SheetGeometry) -> list[str]:
         lines.append(f'<line class="sv-freeze" x1="{freeze_x:.1f}" y1="0" x2="{freeze_x:.1f}" y2="{geom.total_height:.1f}" />')
     if freeze_y is not None:
         lines.append(f'<line class="sv-freeze" x1="0" y1="{freeze_y:.1f}" x2="{geom.total_width:.1f}" y2="{freeze_y:.1f}" />')
+
+    for row_break in sheet.page_breaks.get("row", []):
+        y = geom.y_at_row(row_break + 1)
+        if 0 <= y <= geom.total_height:
+            lines.append(f'<line class="sv-page-break" x1="0" y1="{y:.1f}" x2="{geom.total_width:.1f}" y2="{y:.1f}" />')
+    for col_break in sheet.page_breaks.get("col", []):
+        x = geom.x_at_col(col_break + 1)
+        if 0 <= x <= geom.total_width:
+            lines.append(f'<line class="sv-page-break" x1="{x:.1f}" y1="0" x2="{x:.1f}" y2="{geom.total_height:.1f}" />')
 
     lines.append("</svg>")
     lines.append("</div>")
@@ -478,6 +495,96 @@ def _cell_html(value: str) -> str:
     return html_escape(value or "")
 
 
+def _sheet_padding_px(sheet: SheetDoc) -> tuple[float, float, float, float]:
+    margins = sheet.page_margins
+    return (
+        _margin_to_px(margins.get("top"), 8.0),
+        _margin_to_px(margins.get("right"), 8.0),
+        _margin_to_px(margins.get("bottom"), 8.0),
+        _margin_to_px(margins.get("left"), 8.0),
+    )
+
+
+def _margin_to_px(value: str | None, default_px: float) -> float:
+    if not value:
+        return default_px
+    try:
+        return max(0.0, float(value) * 96.0)
+    except ValueError:
+        return default_px
+
+
+def _header_footer_html(sheet: SheetDoc) -> str:
+    header_raw = sheet.header_footer.get("oddHeader", "")
+    footer_raw = sheet.header_footer.get("oddFooter", "")
+    if not header_raw and not footer_raw:
+        return ""
+
+    rows: list[str] = ['<div class="sv-hf">']
+    if header_raw:
+        rows.append(_hf_row_html("header", _decode_header_footer(header_raw, sheet.name)))
+    if footer_raw:
+        rows.append(_hf_row_html("footer", _decode_header_footer(footer_raw, sheet.name)))
+    rows.append("</div>")
+    return "\n".join(rows)
+
+
+def _hf_row_html(kind: str, sections: dict[str, str]) -> str:
+    return (
+        f'<div class="sv-hf-row sv-hf-{kind}">'
+        f'<span class="sv-hf-left">{html_escape(sections.get("L", ""))}</span>'
+        f'<span class="sv-hf-center">{html_escape(sections.get("C", ""))}</span>'
+        f'<span class="sv-hf-right">{html_escape(sections.get("R", ""))}</span>'
+        "</div>"
+    )
+
+
+def _decode_header_footer(raw: str, sheet_name: str) -> dict[str, str]:
+    sections = _split_hf_sections(raw)
+    return {
+        side: _clean_hf_text(text, sheet_name).strip()
+        for side, text in sections.items()
+    }
+
+
+def _split_hf_sections(raw: str) -> dict[str, str]:
+    sections = {"L": "", "C": "", "R": ""}
+    current = "C"
+    i = 0
+    while i < len(raw):
+        if raw[i] == "&" and i + 1 < len(raw) and raw[i + 1] in {"L", "C", "R"}:
+            current = raw[i + 1]
+            i += 2
+            continue
+        sections[current] += raw[i]
+        i += 1
+    return sections
+
+
+def _clean_hf_text(text: str, sheet_name: str) -> str:
+    cleaned = text.replace("&&", "&")
+    token_map = {
+        "&P": "{page}",
+        "&N": "{pages}",
+        "&D": "{date}",
+        "&T": "{time}",
+        "&A": sheet_name,
+        "&F": "{file}",
+        "&Z": "{path}",
+        "&G": "{image}",
+    }
+    for token, replacement in token_map.items():
+        cleaned = cleaned.replace(token, replacement)
+
+    cleaned = re.sub(r'&"[^"]*"', "", cleaned)
+    cleaned = re.sub(r"&K[0-9A-Fa-f]{6}", "", cleaned)
+    cleaned = re.sub(r"&[0-9]+", "", cleaned)
+    cleaned = re.sub(r"&[BIESUXY]", "", cleaned)
+    cleaned = cleaned.replace("\r", " ").replace("\n", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
 def _col_width_to_px(width: float | None) -> float:
     if width is None:
         return 64.0
@@ -551,4 +658,11 @@ h3 { margin: 22px 0 8px; font-size: 14px; }
 .sv-lines { position: absolute; inset: 0; overflow: visible; }
 .sv-line-label { font: 10px/1.1 sans-serif; fill: #1f2937; paint-order: stroke; stroke: #fff; stroke-width: 2px; }
 .sv-freeze { stroke: #2563eb; stroke-width: 1.3; stroke-dasharray: 5 3; opacity: 0.9; }
+.sv-page-break { stroke: #2563eb; stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.75; }
+.sv-hf { border-top: 1px dashed #cbd5e1; background: #f8fafc; padding: 6px 10px; }
+.sv-hf-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; font: 11px/1.3 'SF Mono', Menlo, Consolas, monospace; color: #334155; }
+.sv-hf-header { margin-bottom: 4px; }
+.sv-hf-left { text-align: left; }
+.sv-hf-center { text-align: center; }
+.sv-hf-right { text-align: right; }
 </style>"""

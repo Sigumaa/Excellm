@@ -61,6 +61,15 @@ def test_standalone_html_output(sample_files) -> None:
     assert '=IF(INDIRECT("変更履歴!E2")<>"",INDIRECT("変更履歴!E2"),"")' not in html
     assert "sv-toolbar" not in html
     assert "<script>" not in html.lower()
+    assert 'class="sv-page-break"' in html
+
+
+def test_standalone_html_includes_footer_tokens(sample_files) -> None:
+    html = convert_xlsx_to_html(sample_files["design"])
+
+    assert 'class="sv-hf"' in html
+    assert 'class="sv-hf-center"' in html
+    assert "{page}" in html
 
 
 def test_work_mode_prefers_displayed_values(sample_files) -> None:
