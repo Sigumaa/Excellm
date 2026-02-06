@@ -451,8 +451,8 @@ def _sheetview_css_block() -> str:
 .sv-grid td { border: 1px solid #d0d7de; padding: 2px 4px; overflow: hidden; vertical-align: top; white-space: pre-wrap; }
 .sv-grid .sv-empty { color: transparent; }
 .sv-overlay { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; }
-.sv-shape { position: absolute; border: 1px solid #fb7185; background: rgba(251, 113, 133, 0.08); color: #111827; font: 10px/1.2 sans-serif; padding: 2px; overflow: hidden; }
-.sv-shape.pic { border-color: #3b82f6; background: rgba(59, 130, 246, 0.06); }
+.sv-shape { position: absolute; border: none; background: transparent; color: #111827; font: 10px/1.2 sans-serif; padding: 0; overflow: hidden; }
+.sv-shape.pic { border: none; background: transparent; }
 .sv-lines { position: absolute; inset: 0; overflow: visible; }
 </style>"""
 

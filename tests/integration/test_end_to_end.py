@@ -61,6 +61,7 @@ def test_standalone_html_output(sample_files) -> None:
     assert '=IF(INDIRECT("変更履歴!E2")<>"",INDIRECT("変更履歴!E2"),"")' not in html
     assert "sv-toolbar" not in html
     assert "<script>" not in html.lower()
+    assert ".sv-shape { position: absolute; border: none;" in html
     assert 'class="sv-page-break"' in html
 
 

@@ -436,19 +436,28 @@ def _connector_points(
 
 
 def _shape_style_css(extra: dict[str, str], z_index: int) -> str:
-    line = extra.get("line_color", "#fb7185")
-    fill = extra.get("fill_color", "rgba(251,113,133,0.08)")
-    width = extra.get("line_width_px", "1.0")
+    line = (extra.get("line_color") or "").strip()
+    fill = (extra.get("fill_color") or "").strip()
+    width_raw = (extra.get("line_width_px") or "1.0").strip()
     dash = extra.get("line_dash")
+    try:
+        width = max(0.5, float(width_raw))
+    except ValueError:
+        width = 1.0
 
-    pieces = [
-        f"z-index:{z_index}",
-        f"border-color:{line}",
-        f"border-width:{width}px",
-        f"background:{_to_alpha(fill, 0.12)}",
-    ]
-    if dash:
-        pieces.append(f"border-style:{_border_style_for_dash(dash)}")
+    pieces = [f"z-index:{z_index}"]
+    if line:
+        pieces.append(f"border-color:{line}")
+        pieces.append(f"border-width:{width:.2f}px")
+        pieces.append(f"border-style:{_border_style_for_dash(dash)}" if dash else "border-style:solid")
+    else:
+        pieces.append("border:none")
+
+    if fill:
+        pieces.append(f"background:{_to_alpha(fill, 0.12)}")
+    else:
+        pieces.append("background:transparent")
+
     return ";".join(pieces) + ";"
 
 
@@ -653,8 +662,8 @@ h3 { margin: 22px 0 8px; font-size: 14px; }
 .sv-grid td { padding: 2px 4px; overflow: hidden; vertical-align: top; white-space: pre-wrap; background: #fff; }
 .sv-grid .sv-empty { color: transparent; }
 .sv-overlay { position: absolute; left: 56px; top: 24px; right: 0; bottom: 0; pointer-events: none; }
-.sv-shape { position: absolute; border: 1px solid var(--shape); background: var(--shape-bg); color: var(--text); font: 10px/1.2 sans-serif; padding: 2px; overflow: hidden; }
-.sv-shape.pic { border-color: var(--pic); background: var(--pic-bg); }
+.sv-shape { position: absolute; border: none; background: transparent; color: var(--text); font: 10px/1.2 sans-serif; padding: 0; overflow: hidden; }
+.sv-shape.pic { border: none; background: transparent; }
 .sv-lines { position: absolute; inset: 0; overflow: visible; }
 .sv-line-label { font: 10px/1.1 sans-serif; fill: #1f2937; paint-order: stroke; stroke: #fff; stroke-width: 2px; }
 .sv-freeze { stroke: #2563eb; stroke-width: 1.3; stroke-dasharray: 5 3; opacity: 0.9; }
