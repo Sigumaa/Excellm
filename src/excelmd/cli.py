@@ -11,12 +11,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Convert .xlsx into a single Markdown file")
     parser.add_argument("input", type=Path, help="Input .xlsx file")
     parser.add_argument("-o", "--output", type=Path, required=True, help="Output Markdown path")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--sheetview",
+        action="store_true",
+        help="Render sheet-view style markdown with HTML table layout",
+    )
     parser.add_argument(
         "--strict-unsupported",
         action="store_true",
         help="Fail if unsupported elements are detected",
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--full",
         action="store_true",
         help="Render full fidelity markdown (large output)",
@@ -30,7 +36,7 @@ def main() -> int:
 
     options = ConvertOptions(
         strict_unsupported=args.strict_unsupported,
-        output_mode="full" if args.full else "work",
+        output_mode="full" if args.full else ("sheetview" if args.sheetview else "work"),
     )
     workbook = load_xlsx(args.input, options=options)
     args.output.write_text(workbook.markdown, encoding="utf-8")

@@ -11,7 +11,7 @@ class ConvertOptions:
     image_mode: Literal["data_uri"] = "data_uri"
     style_level: Literal["xml_equivalent"] = "xml_equivalent"
     strict_unsupported: bool = False
-    output_mode: Literal["work", "full"] = "work"
+    output_mode: Literal["work", "sheetview", "full"] = "work"
 
 
 @dataclass(slots=True)
@@ -163,6 +163,7 @@ class WorkbookDoc:
     options: ConvertOptions
     source_metadata: dict[str, Any] = field(default_factory=dict)
     styles_xml_equivalent: dict[str, Any] = field(default_factory=dict)
+    style_css_map: dict[str, str] = field(default_factory=dict)
     defined_names: list[DefinedName] = field(default_factory=list)
     sheets: list[SheetDoc] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

@@ -6,6 +6,7 @@
 
 - `.xlsx` 専用（初版）
 - デフォルトは「作業ビュー向け」のMarkdownを出力
+- `--sheetview` でシート見た目再現向け（HTMLテーブル）を出力
 - `--full` で従来の全量・高忠実度ダンプを出力
 - セル情報（座標、値、数式、計算済み値、スタイルID）を保持
 - 結合セル、データ入力規則、印刷設定、定義名を保持
@@ -39,6 +40,12 @@ strictモード（未対応要素があると失敗）:
 
 ```bash
 uv run --python 3.12 excel-md 入力.xlsx -o 出力.md --strict-unsupported
+```
+
+シート見た目再現モード（Markdown内にHTMLテーブルを埋め込み）:
+
+```bash
+uv run --python 3.12 excel-md 入力.xlsx -o 出力.md --sheetview
 ```
 
 全量モード（サイズ大、完全ダンプ）:

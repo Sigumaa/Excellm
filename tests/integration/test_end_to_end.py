@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from excelmd.api import convert_xlsx_to_markdown, load_xlsx
+from excelmd.model import ConvertOptions
 
 
 def test_convert_all_samples_success(sample_files) -> None:
@@ -31,3 +32,14 @@ def test_markdown_contains_mermaid_and_unsupported_sections(sample_files) -> Non
     assert "### Diagram Workspace" in markdown
     assert "```mermaid" in markdown
     assert "### Unsupported Elements" in markdown
+
+
+def test_sheetview_mode_renders_html_grid(sample_files) -> None:
+    markdown = convert_xlsx_to_markdown(
+        sample_files["flow"],
+        options=ConvertOptions(output_mode="sheetview"),
+    )
+
+    assert "## SheetView (Markdown + HTML)" in markdown
+    assert '<table class="sv-grid">' in markdown
+    assert '<div class="sv-overlay">' in markdown

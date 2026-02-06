@@ -52,7 +52,9 @@ class OOXMLWorkbookParser:
             workbook.source_metadata = self._build_source_metadata(zip_file)
             content_types = self._parse_content_types(zip_file)
             shared_strings = self._parse_shared_strings(zip_file)
-            workbook.styles_xml_equivalent = self._parse_styles_xml_equivalent(zip_file)
+            styles_xml_equivalent, style_css_map = self._parse_styles(zip_file)
+            workbook.styles_xml_equivalent = styles_xml_equivalent
+            workbook.style_css_map = style_css_map
 
             wb_root = ET.fromstring(zip_file.read("xl/workbook.xml"))
             wb_rels = self._load_relationships(zip_file, "xl/_rels/workbook.xml.rels")
@@ -123,11 +125,155 @@ class OOXMLWorkbookParser:
 
         return types
 
-    def _parse_styles_xml_equivalent(self, zip_file: ZipFile) -> dict:
+    def _parse_styles(self, zip_file: ZipFile) -> tuple[dict, dict[str, str]]:
         if "xl/styles.xml" not in zip_file.namelist():
-            return {}
+            return {}, {}
         root = ET.fromstring(zip_file.read("xl/styles.xml"))
-        return xml_to_dict(root)
+        return xml_to_dict(root), self._build_style_css_map(root)
+
+    def _build_style_css_map(self, styles_root: ET.Element) -> dict[str, str]:
+        fonts = [self._extract_font_css(font) for font in styles_root.findall("a:fonts/a:font", NS)]
+        fills = [self._extract_fill_css(fill) for fill in styles_root.findall("a:fills/a:fill", NS)]
+        borders = [self._extract_border_css(border) for border in styles_root.findall("a:borders/a:border", NS)]
+
+        style_map: dict[str, str] = {}
+        xfs = styles_root.findall("a:cellXfs/a:xf", NS)
+        for idx, xf in enumerate(xfs):
+            parts: list[str] = []
+            try:
+                font_id = int(xf.attrib.get("fontId", "0"))
+            except ValueError:
+                font_id = 0
+            try:
+                fill_id = int(xf.attrib.get("fillId", "0"))
+            except ValueError:
+                fill_id = 0
+            try:
+                border_id = int(xf.attrib.get("borderId", "0"))
+            except ValueError:
+                border_id = 0
+
+            if 0 <= font_id < len(fonts) and fonts[font_id]:
+                parts.extend(fonts[font_id])
+            if 0 <= fill_id < len(fills) and fills[fill_id]:
+                parts.extend(fills[fill_id])
+            if 0 <= border_id < len(borders) and borders[border_id]:
+                parts.extend(borders[border_id])
+
+            alignment = xf.find("a:alignment", NS)
+            if alignment is not None:
+                h = alignment.attrib.get("horizontal")
+                v = alignment.attrib.get("vertical")
+                if h:
+                    parts.append(f"text-align: {h};")
+                if v:
+                    parts.append(f"vertical-align: {v};")
+                if alignment.attrib.get("wrapText") == "1":
+                    parts.append("white-space: pre-wrap;")
+                else:
+                    parts.append("white-space: pre;")
+
+            style_map[str(idx)] = " ".join(parts).strip()
+
+        style_map.setdefault("0", "")
+        return style_map
+
+    def _extract_font_css(self, font: ET.Element) -> list[str]:
+        parts: list[str] = []
+        name = font.find("a:name", NS)
+        if name is not None and name.attrib.get("val"):
+            parts.append(f"font-family: '{name.attrib['val']}';")
+        size = font.find("a:sz", NS)
+        if size is not None and size.attrib.get("val"):
+            parts.append(f"font-size: {size.attrib['val']}pt;")
+        if font.find("a:b", NS) is not None:
+            parts.append("font-weight: 700;")
+        if font.find("a:i", NS) is not None:
+            parts.append("font-style: italic;")
+        if font.find("a:u", NS) is not None:
+            parts.append("text-decoration: underline;")
+
+        color = font.find("a:color", NS)
+        color_hex = self._extract_color(color)
+        if color_hex:
+            parts.append(f"color: {color_hex};")
+        return parts
+
+    def _extract_fill_css(self, fill: ET.Element) -> list[str]:
+        pattern = fill.find("a:patternFill", NS)
+        if pattern is None:
+            return []
+        pattern_type = pattern.attrib.get("patternType")
+        if pattern_type in {None, "none"}:
+            return []
+        fg = self._extract_color(pattern.find("a:fgColor", NS))
+        bg = self._extract_color(pattern.find("a:bgColor", NS))
+        color = fg or bg
+        if not color:
+            return []
+        return [f"background-color: {color};"]
+
+    def _extract_border_css(self, border: ET.Element) -> list[str]:
+        parts: list[str] = []
+        for side in ("left", "right", "top", "bottom"):
+            elem = border.find(f"a:{side}", NS)
+            if elem is None:
+                continue
+            style = elem.attrib.get("style")
+            if not style:
+                continue
+            color = self._extract_color(elem.find("a:color", NS)) or "#6b7280"
+            width, pattern = self._border_style(style)
+            parts.append(f"border-{side}: {width}px {pattern} {color};")
+        return parts
+
+    def _border_style(self, style: str) -> tuple[int, str]:
+        mapping = {
+            "thin": (1, "solid"),
+            "medium": (2, "solid"),
+            "thick": (3, "solid"),
+            "dotted": (1, "dotted"),
+            "dashed": (1, "dashed"),
+            "double": (3, "double"),
+            "hair": (1, "solid"),
+            "mediumDashed": (2, "dashed"),
+            "dashDot": (1, "dashed"),
+            "mediumDashDot": (2, "dashed"),
+            "dashDotDot": (1, "dashed"),
+            "mediumDashDotDot": (2, "dashed"),
+            "slantDashDot": (1, "dashed"),
+        }
+        return mapping.get(style, (1, "solid"))
+
+    def _extract_color(self, color_elem: ET.Element | None) -> str | None:
+        if color_elem is None:
+            return None
+        rgb = color_elem.attrib.get("rgb")
+        if rgb:
+            hex_rgb = rgb[-6:] if len(rgb) >= 6 else rgb
+            return f"#{hex_rgb.upper()}"
+        if color_elem.attrib.get("auto") == "1":
+            return "#000000"
+        indexed = color_elem.attrib.get("indexed")
+        if indexed is not None:
+            try:
+                idx = int(indexed)
+            except ValueError:
+                return None
+            indexed_map = {
+                0: "#000000",
+                1: "#FFFFFF",
+                2: "#FF0000",
+                3: "#00FF00",
+                4: "#0000FF",
+                5: "#FFFF00",
+                6: "#FF00FF",
+                7: "#00FFFF",
+                8: "#000000",
+                9: "#FFFFFF",
+            }
+            return indexed_map.get(idx)
+        return None
 
     def _parse_shared_strings(self, zip_file: ZipFile) -> list[str]:
         if "xl/sharedStrings.xml" not in zip_file.namelist():
