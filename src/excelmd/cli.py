@@ -16,6 +16,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fail if unsupported elements are detected",
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Render full fidelity markdown (large output)",
+    )
     return parser
 
 
@@ -23,7 +28,10 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    options = ConvertOptions(strict_unsupported=args.strict_unsupported)
+    options = ConvertOptions(
+        strict_unsupported=args.strict_unsupported,
+        output_mode="full" if args.full else "work",
+    )
     workbook = load_xlsx(args.input, options=options)
     args.output.write_text(workbook.markdown, encoding="utf-8")
     return 0

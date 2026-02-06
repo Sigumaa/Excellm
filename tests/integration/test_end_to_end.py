@@ -28,5 +28,6 @@ def test_embedded_images_and_connectors(sample_files) -> None:
 def test_markdown_contains_mermaid_and_unsupported_sections(sample_files) -> None:
     markdown = convert_xlsx_to_markdown(sample_files["flow"])
 
-    assert "### Mermaid" in markdown
+    assert "### Diagram Workspace" in markdown
+    assert "```mermaid" in markdown
     assert "### Unsupported Elements" in markdown

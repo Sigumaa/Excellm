@@ -11,6 +11,7 @@ class ConvertOptions:
     image_mode: Literal["data_uri"] = "data_uri"
     style_level: Literal["xml_equivalent"] = "xml_equivalent"
     strict_unsupported: bool = False
+    output_mode: Literal["work", "full"] = "work"
 
 
 @dataclass(slots=True)
