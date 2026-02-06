@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from excelmd.api import convert_xlsx_to_markdown, load_xlsx
+from excelmd.api import convert_xlsx_to_html, convert_xlsx_to_markdown, load_xlsx
 from excelmd.model import ConvertOptions
 
 
@@ -43,3 +43,12 @@ def test_sheetview_mode_renders_html_grid(sample_files) -> None:
     assert "## SheetView (Markdown + HTML)" in markdown
     assert '<table class="sv-grid">' in markdown
     assert '<div class="sv-overlay">' in markdown
+
+
+def test_standalone_html_output(sample_files) -> None:
+    html = convert_xlsx_to_html(sample_files["flow"])
+
+    assert "<!doctype html>" in html.lower()
+    assert "<html" in html.lower()
+    assert '<table class="sv-grid">' in html
+    assert "Sheet: 1. ログイン(A101)" in html

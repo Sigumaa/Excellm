@@ -48,6 +48,12 @@ uv run --python 3.12 excel-md 入力.xlsx -o 出力.md --strict-unsupported
 uv run --python 3.12 excel-md 入力.xlsx -o 出力.md --sheetview
 ```
 
+独立HTML出力モード（シートビュー再現HTMLを直接生成）:
+
+```bash
+uv run --python 3.12 excel-md 入力.xlsx -o 出力.html --html
+```
+
 全量モード（サイズ大、完全ダンプ）:
 
 ```bash
