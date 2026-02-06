@@ -54,6 +54,13 @@ uv run --python 3.12 excel-md 入力.xlsx -o 出力.md --sheetview
 uv run --python 3.12 excel-md 入力.xlsx -o 出力.html --html
 ```
 
+このモードでは以下を反映します。
+- 行・列ヘッダー（Excel風グリッド）
+- 結合セルの `rowspan/colspan` 再現
+- セルスタイル（フォント・背景・罫線・配置の主要要素）
+- 図形オーバーレイとコネクタ線/矢印
+- hidden行/列の非表示
+
 全量モード（サイズ大、完全ダンプ）:
 
 ```bash

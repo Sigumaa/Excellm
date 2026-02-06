@@ -4,7 +4,7 @@ import json
 from html import escape as html_escape
 
 from .model import AnchorPoint, SheetDoc, WorkbookDoc
-from .parser.utils import parse_range_ref, rowcol_to_coord
+from .parser.utils import index_to_col, parse_range_ref, rowcol_to_coord
 
 
 def render_workbook_html(workbook: WorkbookDoc) -> str:
@@ -22,6 +22,7 @@ def render_workbook_html(workbook: WorkbookDoc) -> str:
 
     parts.append('<main class="page">')
     parts.append(f"<h1>Workbook: {html_escape(workbook.source_path.name)}</h1>")
+
     parts.append("<section>")
     parts.append("<h2>Source Metadata</h2>")
     parts.append(_kv_table(workbook.source_metadata))
@@ -39,9 +40,13 @@ def render_workbook_html(workbook: WorkbookDoc) -> str:
         parts.append(
             "<p class=\"meta\">"
             f"used_range=<code>{html_escape(sheet.dimension_ref)}</code> / "
-            f"print_areas=<code>{html_escape(print_areas)}</code>"
+            f"print_areas=<code>{html_escape(print_areas)}</code> / "
+            f"hidden_rows=<code>{len(sheet.hidden_rows)}</code> / "
+            f"hidden_cols=<code>{len(sheet.hidden_cols)}</code>"
             "</p>"
         )
+        if sheet.pane:
+            parts.append(f"<p class=\"meta\">pane=<code>{html_escape(json.dumps(sheet.pane, ensure_ascii=False))}</code></p>")
 
         ranges = _sheetview_ranges(sheet)
         for idx, rng in enumerate(ranges, start=1):
@@ -98,6 +103,11 @@ def _sheetview_ranges(sheet: SheetDoc):
 
 def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dict[str, str]) -> str:
     rng = parse_range_ref(range_ref)
+    visible_rows = [r for r in range(rng.start_row, rng.end_row + 1) if r not in sheet.hidden_rows]
+    visible_cols = [c for c in range(rng.start_col, rng.end_col + 1) if c not in sheet.hidden_cols]
+
+    if not visible_rows or not visible_cols:
+        return '<p class="empty">All rows/cols in this range are hidden.</p>'
 
     merge_anchor: dict[str, tuple[int, int, str]] = {}
     merge_covered: set[str] = set()
@@ -106,20 +116,22 @@ def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dic
             continue
         if m.end_col < rng.start_col or m.start_col > rng.end_col:
             continue
-        tl = rowcol_to_coord(m.start_row, m.start_col)
-        merge_anchor[tl] = (m.end_row - m.start_row + 1, m.end_col - m.start_col + 1, m.ref)
-        for rr in range(m.start_row, m.end_row + 1):
-            for cc in range(m.start_col, m.end_col + 1):
-                if rr == m.start_row and cc == m.start_col:
-                    continue
-                merge_covered.add(rowcol_to_coord(rr, cc))
 
-    col_px: dict[int, float] = {}
-    row_px: dict[int, float] = {}
-    for col in range(rng.start_col, rng.end_col + 1):
-        col_px[col] = _col_width_to_px(sheet.col_widths.get(col))
-    for row in range(rng.start_row, rng.end_row + 1):
-        row_px[row] = _row_height_to_px(sheet.row_heights.get(row))
+        m_rows = [r for r in visible_rows if m.start_row <= r <= m.end_row]
+        m_cols = [c for c in visible_cols if m.start_col <= c <= m.end_col]
+        if not m_rows or not m_cols:
+            continue
+
+        anchor_coord = rowcol_to_coord(m_rows[0], m_cols[0])
+        merge_anchor[anchor_coord] = (len(m_rows), len(m_cols), m.ref)
+        for rr in m_rows:
+            for cc in m_cols:
+                coord = rowcol_to_coord(rr, cc)
+                if coord != anchor_coord:
+                    merge_covered.add(coord)
+
+    col_px: dict[int, float] = {col: _col_width_to_px(sheet.col_widths.get(col)) for col in visible_cols}
+    row_px: dict[int, float] = {row: _row_height_to_px(sheet.row_heights.get(row)) for row in visible_rows}
 
     total_w = int(sum(col_px.values()))
     total_h = int(sum(row_px.values()))
@@ -129,14 +141,23 @@ def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dic
     out.append('<div class="sv-canvas">')
     out.append('<table class="sv-grid">')
     out.append("<colgroup>")
-    for col in range(rng.start_col, rng.end_col + 1):
+    out.append('<col style="width:56px">')
+    for col in visible_cols:
         out.append(f'<col style="width:{col_px[col]:.1f}px">')
     out.append("</colgroup>")
+    out.append("<thead>")
+    out.append('<tr class="sv-head-row">')
+    out.append('<th class="sv-corner"></th>')
+    for col in visible_cols:
+        out.append(f'<th class="sv-col-head">{index_to_col(col)}</th>')
+    out.append("</tr>")
+    out.append("</thead>")
     out.append("<tbody>")
 
-    for row in range(rng.start_row, rng.end_row + 1):
+    for row in visible_rows:
         out.append(f'<tr style="height:{row_px[row]:.1f}px">')
-        for col in range(rng.start_col, rng.end_col + 1):
+        out.append(f'<th class="sv-row-head">{row}</th>')
+        for col in visible_cols:
             coord = rowcol_to_coord(row, col)
             if coord in merge_covered:
                 continue
@@ -154,7 +175,10 @@ def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dic
                 attrs.append(f'colspan="{colspan}"')
                 attrs.append(f'data-merge="{html_escape(merge_ref)}"')
 
-            text_html = _cell_html(cell.value if cell else "", cell.formula if cell else None)
+            text_html = _cell_html(
+                cell.display_value if cell else "",
+                cell.formula if cell else None,
+            )
             classes = ["sv-cell"]
             if not text_html.strip():
                 classes.append("sv-empty")
@@ -183,9 +207,12 @@ def _overlay_html(sheet: SheetDoc, start_col: int, start_row: int, total_w: int,
         rx1, ry1, rx2, ry2 = origin_x, origin_y, origin_x + total_w, origin_y + total_h
         return not (x2 < rx1 or x1 > rx2 or y2 < ry1 or y1 > ry2)
 
+    drawing_map = {obj.object_uid: obj for obj in sheet.drawings}
+
     lines: list[str] = []
     lines.append('<div class="sv-overlay">')
 
+    z = 10
     for obj in sheet.drawings:
         if obj.kind == "cxnSp" or not intersects(obj.bbox):
             continue
@@ -199,9 +226,12 @@ def _overlay_html(sheet: SheetDoc, start_col: int, start_row: int, total_w: int,
         label = (obj.text or obj.name or obj.object_id).strip()
         safe_label = html_escape(label)
 
-        classes = "sv-shape"
+        classes = ["sv-shape"]
         if obj.kind == "pic":
-            classes += " pic"
+            classes.append("pic")
+
+        shape_style = _shape_style_css(obj.extra, z)
+        z += 1
 
         if obj.kind == "pic" and obj.image_data_uri:
             body = (
@@ -209,14 +239,20 @@ def _overlay_html(sheet: SheetDoc, start_col: int, start_row: int, total_w: int,
                 'style="width:100%;height:100%;object-fit:contain;">'
             )
         else:
-            body = safe_label
+            body = safe_label or "&nbsp;"
 
         lines.append(
-            f'<div class="{classes}" style="left:{left:.1f}px;top:{top:.1f}px;'
-            f'width:{width:.1f}px;height:{height:.1f}px;">{body}</div>'
+            f'<div class="{" ".join(classes)}" style="left:{left:.1f}px;top:{top:.1f}px;'
+            f'width:{width:.1f}px;height:{height:.1f}px;{shape_style}">{body}</div>'
         )
 
     lines.append(f'<svg class="sv-lines" width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}">')
+    lines.append("<defs>")
+    lines.append('<marker id="arrow-triangle" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">')
+    lines.append('<path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />')
+    lines.append("</marker>")
+    lines.append("</defs>")
+
     for conn in sheet.connectors:
         x1, y1 = _connector_point(conn.anchor_from, conn.bbox, True)
         x2, y2 = _connector_point(conn.anchor_to, conn.bbox, False)
@@ -226,14 +262,81 @@ def _overlay_html(sheet: SheetDoc, start_col: int, start_row: int, total_w: int,
         y2 -= origin_y
         if max(x1, x2) < 0 or max(y1, y2) < 0 or min(x1, x2) > total_w or min(y1, y2) > total_h:
             continue
+
+        source_obj = drawing_map.get(conn.object_uid)
+        extra = source_obj.extra if source_obj else {}
+        stroke = extra.get("line_color", "#ef4444")
+        stroke_width = extra.get("line_width_px", "1.2")
+        dash = extra.get("line_dash", "")
+        dash_css = _dasharray_for(dash)
+        marker_start = ' marker-start="url(#arrow-triangle)"' if _has_arrow(conn.arrow_head) else ""
+        marker_end = ' marker-end="url(#arrow-triangle)"' if _has_arrow(conn.arrow_tail) else ""
+        dash_attr = f' stroke-dasharray="{dash_css}"' if dash_css else ""
+
         lines.append(
             f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
-            'stroke="#ef4444" stroke-width="1.2" stroke-opacity="0.82" />'
+            f'stroke="{stroke}" stroke-width="{stroke_width}" stroke-opacity="0.9"{dash_attr}{marker_start}{marker_end} />'
         )
     lines.append("</svg>")
 
     lines.append("</div>")
     return lines
+
+
+def _shape_style_css(extra: dict[str, str], z_index: int) -> str:
+    line = extra.get("line_color", "#fb7185")
+    fill = extra.get("fill_color", "rgba(251,113,133,0.08)")
+    width = extra.get("line_width_px", "1.0")
+    dash = extra.get("line_dash")
+
+    pieces = [
+        f"z-index:{z_index}",
+        f"border-color:{line}",
+        f"border-width:{width}px",
+        f"background:{_to_alpha(fill, 0.12)}",
+    ]
+    if dash:
+        pieces.append(f"border-style:{_border_style_for_dash(dash)}")
+    return ";".join(pieces) + ";"
+
+
+def _to_alpha(color: str, alpha: float) -> str:
+    c = color.strip()
+    if c.startswith("#") and len(c) == 7:
+        try:
+            r = int(c[1:3], 16)
+            g = int(c[3:5], 16)
+            b = int(c[5:7], 16)
+            return f"rgba({r},{g},{b},{alpha:.2f})"
+        except ValueError:
+            return c
+    return c
+
+
+def _border_style_for_dash(dash: str) -> str:
+    mapping = {
+        "dash": "dashed",
+        "dot": "dotted",
+        "dashDot": "dashed",
+        "lgDash": "dashed",
+    }
+    return mapping.get(dash, "solid")
+
+
+def _dasharray_for(dash: str) -> str:
+    mapping = {
+        "dash": "6 4",
+        "dot": "2 3",
+        "dashDot": "8 3 2 3",
+        "lgDash": "10 4",
+        "sysDot": "2 3",
+        "sysDash": "6 4",
+    }
+    return mapping.get(dash, "")
+
+
+def _has_arrow(value: str | None) -> bool:
+    return bool(value and value.lower() != "none")
 
 
 def _connector_point(anchor: AnchorPoint | None, bbox: tuple[float, float, float, float], is_start: bool) -> tuple[float, float]:
@@ -282,7 +385,9 @@ def _html_css() -> str:
     return """<style>
 :root {
   --line: #d0d7de;
+  --line-head: #bcc6d4;
   --bg-soft: #f6f8fa;
+  --bg-head: #edf2f7;
   --text: #111827;
   --shape: #fb7185;
   --shape-bg: rgba(251, 113, 133, 0.08);
@@ -300,13 +405,21 @@ h3 { margin: 22px 0 8px; font-size: 14px; }
 .simple { border-collapse: collapse; width: 100%; max-width: 1200px; }
 .simple th, .simple td { border: 1px solid var(--line); padding: 6px 8px; font-size: 12px; vertical-align: top; }
 .simple th { background: var(--bg-soft); text-align: left; }
-.sv-wrap { margin: 12px 0 28px; border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #fff; }
+.sv-wrap { margin: 12px 0 28px; border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
 .sv-canvas { position: relative; display: inline-block; }
-.sv-grid { border-collapse: collapse; font: 11px/1.3 'Yu Gothic UI', 'Meiryo', sans-serif; table-layout: fixed; background: #fff; }
-.sv-grid td { border: 1px solid var(--line); padding: 2px 4px; overflow: hidden; vertical-align: top; white-space: pre-wrap; }
+.sv-grid { border-collapse: collapse; font: 11px/1.25 'Yu Gothic UI', 'Meiryo', sans-serif; table-layout: fixed; background: #fff; }
+.sv-grid th, .sv-grid td { border: 1px solid var(--line); }
+.sv-grid .sv-head-row th,
+.sv-grid .sv-row-head,
+.sv-grid .sv-corner,
+.sv-grid .sv-col-head { background: var(--bg-head); border-color: var(--line-head); color: #374151; font: 11px/1.2 'SF Mono', Menlo, Consolas, monospace; text-align: center; }
+.sv-grid .sv-col-head { height: 24px; position: sticky; top: 0; z-index: 6; }
+.sv-grid .sv-corner { width: 56px; min-width: 56px; position: sticky; top: 0; left: 0; z-index: 7; }
+.sv-grid .sv-row-head { width: 56px; min-width: 56px; position: sticky; left: 0; z-index: 5; }
+.sv-grid td { padding: 2px 4px; overflow: hidden; vertical-align: top; white-space: pre-wrap; }
 .sv-grid .sv-empty { color: transparent; }
 .sv-formula { display: block; margin-top: 2px; color: #6b7280; font-size: 10px; }
-.sv-overlay { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; }
+.sv-overlay { position: absolute; left: 56px; top: 24px; right: 0; bottom: 0; pointer-events: none; }
 .sv-shape { position: absolute; border: 1px solid var(--shape); background: var(--shape-bg); color: var(--text); font: 10px/1.2 sans-serif; padding: 2px; overflow: hidden; }
 .sv-shape.pic { border-color: var(--pic); background: var(--pic-bg); }
 .sv-lines { position: absolute; inset: 0; overflow: visible; }

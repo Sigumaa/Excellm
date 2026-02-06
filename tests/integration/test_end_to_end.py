@@ -51,4 +51,7 @@ def test_standalone_html_output(sample_files) -> None:
     assert "<!doctype html>" in html.lower()
     assert "<html" in html.lower()
     assert '<table class="sv-grid">' in html
+    assert 'class="sv-col-head"' in html
+    assert 'class="sv-row-head"' in html
+    assert "marker id=\"arrow-triangle\"" in html
     assert "Sheet: 1. ログイン(A101)" in html
