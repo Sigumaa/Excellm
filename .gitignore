@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 src/*.egg-info/
 *.md.out
+システム機能設計書(画面)_WA10202_プロジェクト照会.xlsx
+画面一覧_A1_プロジェクト管理システム.xlsx
+画面遷移図_プロジェクト管理システム.xlsx
