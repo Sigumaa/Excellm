@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from zipfile import ZipFile
@@ -42,6 +44,40 @@ class OOXMLWorkbookParser:
     def __init__(self, source_path: str | Path, options: ConvertOptions) -> None:
         self.source_path = Path(source_path)
         self.options = options
+        self._theme_colors: dict[int, str] = {}
+        self._style_numfmt_map: dict[str, str] = {}
+
+        self._builtin_numfmts: dict[int, str] = {
+            0: "General",
+            1: "0",
+            2: "0.00",
+            3: "#,##0",
+            4: "#,##0.00",
+            9: "0%",
+            10: "0.00%",
+            11: "0.00E+00",
+            12: "# ?/?",
+            13: "# ??/??",
+            14: "m/d/yyyy",
+            15: "d-mmm-yy",
+            16: "d-mmm",
+            17: "mmm-yy",
+            18: "h:mm AM/PM",
+            19: "h:mm:ss AM/PM",
+            20: "h:mm",
+            21: "h:mm:ss",
+            22: "m/d/yyyy h:mm",
+            37: "#,##0 ;(#,##0)",
+            38: "#,##0 ;[Red](#,##0)",
+            39: "#,##0.00;(#,##0.00)",
+            40: "#,##0.00;[Red](#,##0.00)",
+            45: "mm:ss",
+            46: "[h]:mm:ss",
+            47: "mmss.0",
+            48: "##0.0E+0",
+            49: "@",
+        }
+        self._date_token_re = re.compile(r"(?:^|[^\\])(?:y+|m+|d+|h+|s+|AM/PM)", re.IGNORECASE)
 
     def parse(self) -> WorkbookDoc:
         if self.source_path.suffix.lower() != ".xlsx":
@@ -52,7 +88,9 @@ class OOXMLWorkbookParser:
             workbook.source_metadata = self._build_source_metadata(zip_file)
             content_types = self._parse_content_types(zip_file)
             shared_strings = self._parse_shared_strings(zip_file)
-            styles_xml_equivalent, style_css_map = self._parse_styles(zip_file)
+            self._theme_colors = self._parse_theme_colors(zip_file)
+            styles_xml_equivalent, style_css_map, style_numfmt_map = self._parse_styles(zip_file)
+            self._style_numfmt_map = style_numfmt_map
             workbook.styles_xml_equivalent = styles_xml_equivalent
             workbook.style_css_map = style_css_map
 
@@ -125,18 +163,43 @@ class OOXMLWorkbookParser:
 
         return types
 
-    def _parse_styles(self, zip_file: ZipFile) -> tuple[dict, dict[str, str]]:
-        if "xl/styles.xml" not in zip_file.namelist():
-            return {}, {}
-        root = ET.fromstring(zip_file.read("xl/styles.xml"))
-        return xml_to_dict(root), self._build_style_css_map(root)
+    def _parse_theme_colors(self, zip_file: ZipFile) -> dict[int, str]:
+        theme_path = "xl/theme/theme1.xml"
+        if theme_path not in zip_file.namelist():
+            return {}
 
-    def _build_style_css_map(self, styles_root: ET.Element) -> dict[str, str]:
+        root = ET.fromstring(zip_file.read(theme_path))
+        clr_scheme = root.find(".//{http://schemas.openxmlformats.org/drawingml/2006/main}clrScheme")
+        if clr_scheme is None:
+            return {}
+
+        color_list: list[str] = []
+        for child in list(clr_scheme):
+            srgb = child.find("{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr")
+            if srgb is not None and srgb.attrib.get("val"):
+                color_list.append("#" + srgb.attrib["val"].upper())
+                continue
+            sys_clr = child.find("{http://schemas.openxmlformats.org/drawingml/2006/main}sysClr")
+            if sys_clr is not None and sys_clr.attrib.get("lastClr"):
+                color_list.append("#" + sys_clr.attrib["lastClr"].upper())
+
+        return {idx: color for idx, color in enumerate(color_list)}
+
+    def _parse_styles(self, zip_file: ZipFile) -> tuple[dict, dict[str, str], dict[str, str]]:
+        if "xl/styles.xml" not in zip_file.namelist():
+            return {}, {}, {}
+        root = ET.fromstring(zip_file.read("xl/styles.xml"))
+        style_css_map, style_numfmt_map = self._build_style_maps(root)
+        return xml_to_dict(root), style_css_map, style_numfmt_map
+
+    def _build_style_maps(self, styles_root: ET.Element) -> tuple[dict[str, str], dict[str, str]]:
         fonts = [self._extract_font_css(font) for font in styles_root.findall("a:fonts/a:font", NS)]
         fills = [self._extract_fill_css(fill) for fill in styles_root.findall("a:fills/a:fill", NS)]
         borders = [self._extract_border_css(border) for border in styles_root.findall("a:borders/a:border", NS)]
+        custom_numfmts = self._parse_custom_numfmts(styles_root)
 
         style_map: dict[str, str] = {}
+        style_numfmt_map: dict[str, str] = {}
         xfs = styles_root.findall("a:cellXfs/a:xf", NS)
         for idx, xf in enumerate(xfs):
             parts: list[str] = []
@@ -174,9 +237,29 @@ class OOXMLWorkbookParser:
                     parts.append("white-space: pre;")
 
             style_map[str(idx)] = " ".join(parts).strip()
+            try:
+                num_fmt_id = int(xf.attrib.get("numFmtId", "0"))
+            except ValueError:
+                num_fmt_id = 0
+            style_numfmt_map[str(idx)] = custom_numfmts.get(num_fmt_id) or self._builtin_numfmts.get(num_fmt_id, "")
 
         style_map.setdefault("0", "")
-        return style_map
+        style_numfmt_map.setdefault("0", "")
+        return style_map, style_numfmt_map
+
+    def _parse_custom_numfmts(self, styles_root: ET.Element) -> dict[int, str]:
+        result: dict[int, str] = {}
+        for num_fmt in styles_root.findall("a:numFmts/a:numFmt", NS):
+            raw_id = num_fmt.attrib.get("numFmtId")
+            code = num_fmt.attrib.get("formatCode")
+            if raw_id is None or code is None:
+                continue
+            try:
+                fmt_id = int(raw_id)
+            except ValueError:
+                continue
+            result[fmt_id] = code
+        return result
 
     def _extract_font_css(self, font: ET.Element) -> list[str]:
         parts: list[str] = []
@@ -252,6 +335,22 @@ class OOXMLWorkbookParser:
         if rgb:
             hex_rgb = rgb[-6:] if len(rgb) >= 6 else rgb
             return f"#{hex_rgb.upper()}"
+        theme = color_elem.attrib.get("theme")
+        if theme is not None:
+            try:
+                theme_idx = int(theme)
+            except ValueError:
+                theme_idx = -1
+            base = self._theme_colors.get(theme_idx)
+            if base:
+                tint_raw = color_elem.attrib.get("tint")
+                if tint_raw is not None:
+                    try:
+                        tint = float(tint_raw)
+                        return self._apply_tint(base, tint)
+                    except ValueError:
+                        return base
+                return base
         if color_elem.attrib.get("auto") == "1":
             return "#000000"
         indexed = color_elem.attrib.get("indexed")
@@ -274,6 +373,29 @@ class OOXMLWorkbookParser:
             }
             return indexed_map.get(idx)
         return None
+
+    def _apply_tint(self, hex_color: str, tint: float) -> str:
+        hex_value = hex_color.lstrip("#")
+        if len(hex_value) != 6:
+            return hex_color
+        r = int(hex_value[0:2], 16)
+        g = int(hex_value[2:4], 16)
+        b = int(hex_value[4:6], 16)
+
+        if tint < 0:
+            factor = 1.0 + tint
+            r = int(r * factor)
+            g = int(g * factor)
+            b = int(b * factor)
+        else:
+            r = int(r * (1.0 - tint) + 255 * tint)
+            g = int(g * (1.0 - tint) + 255 * tint)
+            b = int(b * (1.0 - tint) + 255 * tint)
+
+        r = min(255, max(0, r))
+        g = min(255, max(0, g))
+        b = min(255, max(0, b))
+        return f"#{r:02X}{g:02X}{b:02X}"
 
     def _parse_shared_strings(self, zip_file: ZipFile) -> list[str]:
         if "xl/sharedStrings.xml" not in zip_file.namelist():
@@ -375,6 +497,7 @@ class OOXMLWorkbookParser:
         self._parse_rows_cols_cells(root, shared_strings, sheet)
         self._parse_merges(root, sheet)
         self._parse_data_validations(root, sheet)
+        self._parse_sheet_view(root, sheet)
         self._parse_sheet_print_metadata(root, sheet)
         self._parse_sheet_unsupported(root, sheet)
         self._parse_sheet_drawings(zip_file, content_types, sheet, warnings)
@@ -385,6 +508,8 @@ class OOXMLWorkbookParser:
         for row_elem in root.findall(".//a:sheetData/a:row", NS):
             row_idx = int(row_elem.attrib.get("r", "0"))
             ht = row_elem.attrib.get("ht")
+            if row_elem.attrib.get("hidden") == "1":
+                sheet.hidden_rows.add(row_idx)
             if ht:
                 try:
                     sheet.row_heights[row_idx] = float(ht)
@@ -409,14 +534,21 @@ class OOXMLWorkbookParser:
 
                 value_elem = cell_elem.find("a:v", NS)
                 cached_value = value_elem.text if value_elem is not None else None
-                value = self._decode_cell_value(cell_elem, cell_type, cached_value, shared_strings)
+                display_value = self._decode_cell_value(
+                    cell_elem,
+                    cell_type,
+                    cached_value,
+                    shared_strings,
+                    style_id,
+                )
 
                 cell = CellData(
                     coord=coord,
                     row=row,
                     col=col,
                     cell_type=cell_type,
-                    value=value,
+                    value=display_value,
+                    display_value=display_value,
                     formula=formula,
                     cached_value=cached_value,
                     style_id=style_id,
@@ -425,6 +557,12 @@ class OOXMLWorkbookParser:
                 sheet.cell_map[coord] = cell
 
         for col_elem in root.findall(".//a:cols/a:col", NS):
+            start = int(col_elem.attrib.get("min", "0"))
+            end = int(col_elem.attrib.get("max", "0"))
+            if col_elem.attrib.get("hidden") == "1":
+                for idx in range(start, end + 1):
+                    sheet.hidden_cols.add(idx)
+
             width = col_elem.attrib.get("width")
             if width is None:
                 continue
@@ -432,8 +570,6 @@ class OOXMLWorkbookParser:
                 width_value = float(width)
             except ValueError:
                 continue
-            start = int(col_elem.attrib.get("min", "0"))
-            end = int(col_elem.attrib.get("max", "0"))
             for idx in range(start, end + 1):
                 sheet.col_widths[idx] = width_value
 
@@ -443,6 +579,7 @@ class OOXMLWorkbookParser:
         cell_type: str,
         cached_value: str | None,
         shared_strings: list[str],
+        style_id: str | None,
     ) -> str:
         if cell_type == "s":
             if cached_value is None:
@@ -468,7 +605,90 @@ class OOXMLWorkbookParser:
         if cell_type == "b":
             return "TRUE" if cached_value == "1" else "FALSE"
 
-        return cached_value or ""
+        if cell_type in {"e"}:
+            return cached_value or ""
+
+        return self._format_number(cached_value, style_id)
+
+    def _format_number(self, value: str | None, style_id: str | None) -> str:
+        if value is None:
+            return ""
+        raw = value.strip()
+        if raw == "":
+            return ""
+        try:
+            number = float(raw)
+        except ValueError:
+            return raw
+
+        fmt = self._style_numfmt_map.get(style_id or "0", "")
+        if not fmt or fmt.lower() == "general":
+            return self._normalize_general_number(number, raw)
+
+        primary = fmt.split(";")[0]
+        if self._is_date_format(primary):
+            return self._format_excel_date(number, primary)
+        if "%" in primary:
+            return self._format_percent(number, primary)
+        if any(token in primary for token in ("0", "#")):
+            return self._format_decimal(number, primary)
+        return self._normalize_general_number(number, raw)
+
+    def _normalize_general_number(self, number: float, raw: str) -> str:
+        if abs(number - round(number)) < 1e-11:
+            return str(int(round(number)))
+        return raw
+
+    def _is_date_format(self, fmt: str) -> bool:
+        cleaned = self._strip_quoted(fmt)
+        return bool(self._date_token_re.search(cleaned))
+
+    def _strip_quoted(self, fmt: str) -> str:
+        out: list[str] = []
+        in_quote = False
+        for ch in fmt:
+            if ch == '"':
+                in_quote = not in_quote
+                continue
+            if not in_quote:
+                out.append(ch)
+        return "".join(out)
+
+    def _format_excel_date(self, number: float, fmt: str) -> str:
+        base = datetime(1899, 12, 30)
+        dt = base + timedelta(days=number)
+        cleaned = fmt.lower()
+        has_date = any(t in cleaned for t in ("y", "d", "m"))
+        has_time = any(t in cleaned for t in ("h", "s")) or "am/pm" in cleaned
+        if has_date and has_time:
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        if has_time:
+            return dt.strftime("%H:%M:%S")
+        return dt.strftime("%Y-%m-%d")
+
+    def _format_percent(self, number: float, fmt: str) -> str:
+        decimals = 0
+        if "." in fmt:
+            after = fmt.split(".", 1)[1]
+            decimals = sum(1 for ch in after if ch in {"0", "#"})
+        value = number * 100
+        return f"{value:.{decimals}f}%"
+
+    def _format_decimal(self, number: float, fmt: str) -> str:
+        use_grouping = "," in fmt.split(".", 1)[0]
+        decimals = 0
+        if "." in fmt:
+            after = fmt.split(".", 1)[1]
+            decimals = sum(1 for ch in after if ch in {"0", "#"})
+
+        if use_grouping:
+            return f"{number:,.{decimals}f}"
+        return f"{number:.{decimals}f}"
+
+    def _parse_sheet_view(self, root: ET.Element, sheet: SheetDoc) -> None:
+        pane = root.find("a:sheetViews/a:sheetView/a:pane", NS)
+        if pane is not None:
+            sheet.pane = dict(pane.attrib)
 
     def _parse_merges(self, root: ET.Element, sheet: SheetDoc) -> None:
         for merge in root.findall(".//a:mergeCells/a:mergeCell", NS):

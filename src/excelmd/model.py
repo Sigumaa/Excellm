@@ -37,6 +37,7 @@ class CellData:
     col: int
     cell_type: str
     value: str
+    display_value: str
     formula: str | None
     cached_value: str | None
     style_id: str | None
@@ -143,6 +144,9 @@ class SheetDoc:
     data_validations: list[DataValidation] = field(default_factory=list)
     row_heights: dict[int, float] = field(default_factory=dict)
     col_widths: dict[int, float] = field(default_factory=dict)
+    hidden_rows: set[int] = field(default_factory=set)
+    hidden_cols: set[int] = field(default_factory=set)
+    pane: dict[str, str] = field(default_factory=dict)
     print_areas: list[RangeRef] = field(default_factory=list)
     print_titles: list[str] = field(default_factory=list)
     page_setup: dict[str, str] = field(default_factory=dict)

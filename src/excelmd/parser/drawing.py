@@ -115,7 +115,7 @@ def _walk_drawing_object(
     image_target = None
     image_content_type = None
     image_data_uri = None
-    extra: dict[str, str] = {}
+    extra: dict[str, str] = _extract_shape_style(element)
 
     if kind == "pic":
         image_target, image_content_type, image_data_uri = _extract_picture(
@@ -310,6 +310,82 @@ def _extract_text(element: ET.Element) -> str:
         if txt.text:
             fragments.append(txt.text)
     return "".join(fragments).strip()
+
+
+def _extract_shape_style(element: ET.Element) -> dict[str, str]:
+    extra: dict[str, str] = {}
+    sp_pr = element.find(f"{{{SHEET_DRAWING_NS}}}spPr")
+    if sp_pr is None:
+        return extra
+
+    line = sp_pr.find(f"{{{DRAWING_MAIN_NS}}}ln")
+    if line is not None:
+        width = line.attrib.get("w")
+        if width:
+            try:
+                extra["line_width_px"] = f"{max(1.0, int(width) / EMU_PER_PIXEL):.2f}"
+            except ValueError:
+                pass
+        line_color = _extract_drawing_color(line)
+        if line_color:
+            extra["line_color"] = line_color
+        dash = line.find(f"{{{DRAWING_MAIN_NS}}}prstDash")
+        if dash is not None and dash.attrib.get("val"):
+            extra["line_dash"] = dash.attrib["val"]
+
+    fill_color = _extract_fill_color(sp_pr)
+    if fill_color:
+        extra["fill_color"] = fill_color
+
+    return extra
+
+
+def _extract_fill_color(sp_pr: ET.Element) -> str | None:
+    solid = sp_pr.find(f"{{{DRAWING_MAIN_NS}}}solidFill")
+    if solid is not None:
+        color = _extract_drawing_color(solid)
+        if color:
+            return color
+    gradient = sp_pr.find(f"{{{DRAWING_MAIN_NS}}}gradFill")
+    if gradient is not None:
+        first_stop = gradient.find(f".//{{{DRAWING_MAIN_NS}}}gs")
+        if first_stop is not None:
+            color = _extract_drawing_color(first_stop)
+            if color:
+                return color
+    return None
+
+
+def _extract_drawing_color(node: ET.Element) -> str | None:
+    for tag in ("srgbClr", "sysClr", "schemeClr", "prstClr"):
+        c = node.find(f".//{{{DRAWING_MAIN_NS}}}{tag}")
+        if c is None:
+            continue
+        if tag == "srgbClr":
+            val = c.attrib.get("val")
+            if val:
+                return f"#{val.upper()}"
+        if tag == "sysClr":
+            last = c.attrib.get("lastClr")
+            if last:
+                return f"#{last.upper()}"
+        if tag in {"schemeClr", "prstClr"}:
+            val = c.attrib.get("val")
+            if val:
+                fallback = {
+                    "dk1": "#000000",
+                    "lt1": "#FFFFFF",
+                    "dk2": "#1F2937",
+                    "lt2": "#F3F4F6",
+                    "accent1": "#4F46E5",
+                    "accent2": "#16A34A",
+                    "accent3": "#F59E0B",
+                    "accent4": "#0EA5E9",
+                    "accent5": "#EC4899",
+                    "accent6": "#A855F7",
+                }
+                return fallback.get(val, "#6B7280")
+    return None
 
 
 def _extract_picture(
