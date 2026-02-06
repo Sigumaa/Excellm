@@ -43,6 +43,8 @@ def test_sheetview_mode_renders_html_grid(sample_files) -> None:
     assert "## SheetView (Markdown + HTML)" in markdown
     assert '<table class="sv-grid">' in markdown
     assert '<div class="sv-overlay">' in markdown
+    assert "sv-formula" not in markdown
+    assert '=IF(INDIRECT("変更履歴!E2")<>"",INDIRECT("変更履歴!E2"),"")' not in markdown
 
 
 def test_standalone_html_output(sample_files) -> None:
@@ -55,3 +57,14 @@ def test_standalone_html_output(sample_files) -> None:
     assert 'class="sv-row-head"' in html
     assert "marker id=\"arrow-triangle\"" in html
     assert "Sheet: 1. ログイン(A101)" in html
+    assert "sv-formula" not in html
+    assert '=IF(INDIRECT("変更履歴!E2")<>"",INDIRECT("変更履歴!E2"),"")' not in html
+
+
+def test_work_mode_prefers_displayed_values(sample_files) -> None:
+    markdown = convert_xlsx_to_markdown(sample_files["design"])
+
+    assert "### Calculated Cells (Displayed Results)" in markdown
+    assert "### Formula Cells" not in markdown
+    assert "サンプルシステム" in markdown
+    assert '=IF(INDIRECT("変更履歴!E2")<>"",INDIRECT("変更履歴!E2"),"")' not in markdown

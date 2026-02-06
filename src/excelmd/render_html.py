@@ -278,10 +278,7 @@ def _render_sheet_range_html(sheet: SheetDoc, range_ref: str, style_css_map: dic
                 attrs.append(f'colspan="{colspan}"')
                 attrs.append(f'data-merge="{html_escape(merge_ref)}"')
 
-            text_html = _cell_html(
-                cell.display_value if cell else "",
-                cell.formula if cell else None,
-            )
+            text_html = _cell_html(cell.display_value if cell else "")
             classes = ["sv-cell"]
             if not text_html.strip():
                 classes.append("sv-empty")
@@ -487,14 +484,8 @@ def _has_arrow(value: str | None) -> bool:
     return bool(value and value.lower() != "none")
 
 
-def _cell_html(value: str, formula: str | None) -> str:
-    safe_value = html_escape(value or "")
-    if formula:
-        safe_formula = html_escape(formula)
-        if safe_value:
-            return f'{safe_value}<span class="sv-formula">={safe_formula}</span>'
-        return f'<span class="sv-formula">={safe_formula}</span>'
-    return safe_value
+def _cell_html(value: str) -> str:
+    return html_escape(value or "")
 
 
 def _col_width_to_px(width: float | None) -> float:
@@ -567,7 +558,6 @@ h3 { margin: 22px 0 8px; font-size: 14px; }
 .sv-grid .sv-row-head { width: 56px; min-width: 56px; position: sticky; left: 0; z-index: 5; }
 .sv-grid td { padding: 2px 4px; overflow: hidden; vertical-align: top; white-space: pre-wrap; background: #fff; }
 .sv-grid .sv-empty { color: transparent; }
-.sv-formula { display: block; margin-top: 2px; color: #6b7280; font-size: 10px; }
 .sv-overlay { position: absolute; left: 56px; top: 24px; right: 0; bottom: 0; pointer-events: none; }
 .sv-shape { position: absolute; border: 1px solid var(--shape); background: var(--shape-bg); color: var(--text); font: 10px/1.2 sans-serif; padding: 2px; overflow: hidden; }
 .sv-shape.pic { border-color: var(--pic); background: var(--pic-bg); }

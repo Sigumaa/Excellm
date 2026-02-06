@@ -109,22 +109,21 @@ def _render_work_markdown(workbook: WorkbookDoc) -> str:
                 _append_region_workspace(lines, region.region_id, region.bounds.ref, region.rows)
 
         lines.append("")
-        lines.append("### Formula Cells")
+        lines.append("### Calculated Cells (Displayed Results)")
         lines.append("")
         formula_cells = [c for c in sheet.cells if c.formula]
         if not formula_cells:
             lines.append("(none)")
         else:
-            lines.append("| coord | value | formula | cached_value |")
-            lines.append("|---|---|---|---|")
+            lines.append("| coord | value | cached_value |")
+            lines.append("|---|---|---|")
             for cell in formula_cells:
                 lines.append(
                     "| "
                     + " | ".join(
                         [
                             _esc(cell.coord),
-                            _esc(_short(cell.value, 60)),
-                            _esc(_short(cell.formula or "", 120)),
+                            _esc(_short(cell.display_value, 60)),
                             _esc(_short(cell.cached_value or "", 60)),
                         ]
                     )
@@ -264,8 +263,6 @@ def _append_region_workspace(lines: list[str], region_id: int, bounds_ref: str, 
 def _row_is_interesting(row) -> bool:
     if (row.value or "").strip():
         return True
-    if row.formula:
-        return True
     if "data_validation" in row.flags:
         return True
     if "merged" in row.flags and row.merge_ref and row.coord == row.merge_ref.split(":", 1)[0]:
@@ -274,13 +271,7 @@ def _row_is_interesting(row) -> bool:
 
 
 def _cell_display(row) -> str:
-    value = (row.value or "").strip()
-    if not value and row.formula:
-        value = f"={_short(row.formula, 30)}"
-    elif row.formula:
-        value = f"{_short(value, 40)} {{={_short(row.formula, 24)}}}"
-    else:
-        value = _short(value, 48)
+    value = _short((row.value or "").strip(), 48)
 
     markers: list[str] = []
     if row.merge_ref and row.coord == row.merge_ref.split(":", 1)[0]:
@@ -459,7 +450,6 @@ def _sheetview_css_block() -> str:
 .sv-grid { border-collapse: collapse; font: 11px/1.3 'Yu Gothic UI', 'Meiryo', sans-serif; table-layout: fixed; background: #fff; }
 .sv-grid td { border: 1px solid #d0d7de; padding: 2px 4px; overflow: hidden; vertical-align: top; white-space: pre-wrap; }
 .sv-grid .sv-empty { color: transparent; }
-.sv-formula { display: block; margin-top: 2px; color: #6b7280; font-size: 10px; }
 .sv-overlay { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; }
 .sv-shape { position: absolute; border: 1px solid #fb7185; background: rgba(251, 113, 133, 0.08); color: #111827; font: 10px/1.2 sans-serif; padding: 2px; overflow: hidden; }
 .sv-shape.pic { border-color: #3b82f6; background: rgba(59, 130, 246, 0.06); }
@@ -542,7 +532,7 @@ def _render_sheetview_range(
                 attrs.append(f'colspan="{colspan}"')
                 attrs.append(f'data-merge="{html_escape(merge_ref)}"')
 
-            text_html = _sheetview_cell_html(cell.value if cell else "", cell.formula if cell else None)
+            text_html = _sheetview_cell_html(cell.display_value if cell else "")
             classes = ["sv-cell"]
             if not text_html.strip():
                 classes.append("sv-empty")
@@ -618,14 +608,8 @@ def _sheetview_overlay_html(sheet: SheetDoc, rng, total_w: int, total_h: int) ->
     return lines
 
 
-def _sheetview_cell_html(value: str, formula: str | None) -> str:
-    safe_value = html_escape(value or "")
-    if formula:
-        safe_formula = html_escape(_short(formula, 100))
-        if safe_value:
-            return f"{safe_value}<span class=\"sv-formula\">={safe_formula}</span>"
-        return f"<span class=\"sv-formula\">={safe_formula}</span>"
-    return safe_value
+def _sheetview_cell_html(value: str) -> str:
+    return html_escape(value or "")
 
 
 def _col_width_to_px(width: float | None) -> float:
