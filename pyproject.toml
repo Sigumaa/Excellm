@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "excelmd"
+version = "0.1.0"
+description = "High-fidelity .xlsx to single Markdown converter for LLM ingestion"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Excellm" }]
+dependencies = []
+
+[project.scripts]
+excel-md = "excelmd.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
